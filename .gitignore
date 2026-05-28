@@ -1,0 +1,19 @@
+# VSCode
+.vscode/
+
+# Chess databases
+*.pgn
+*.pgn.zst
+
+# Datasets
+*.parquet
+data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
