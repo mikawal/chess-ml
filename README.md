@@ -67,3 +67,7 @@ docs/                    report (tex + pdf)
 ## Limitations
 
 Rapid only, similar-rated opponents only (±100 Elo), 2017 data, no player metadata.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
