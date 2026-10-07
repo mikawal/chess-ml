@@ -11,8 +11,8 @@ Details and design decisions: [docs/report.pdf](docs/report.pdf).
 
 - [x] Sampling: stratified reservoir sampling, 333k games from 34.6M
 - [x] Player-disjoint train/test split (229k / 9.7k games)
-- [x] Basic features (opening family, time control, merged 7 Elo bins)
 - [x] Baselines: majority class 16.6 % accuracy (7 classes)
+- [ ] Basic features (opening family, time control, merged 7 Elo bins) (WIP)
 - [ ] Stockfish features (pipeline and calibration done, depth not yet chosen)
 - [ ] PGN features (clock usage, development, castling)
 - [ ] XGBoost baseline and evaluation
