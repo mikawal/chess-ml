@@ -1,13 +1,8 @@
-"""Leakage-free train/val/test split for the Lichess game dataset.
+"""Player-disjoint train/test (or train/val/test) split.
 
-Players are assigned to splits, not games. Each player receives exactly one
-split label, so no player can appear in two sets. A game is retained only when
-both of its players carry the same label; games crossing a split boundary are
-dropped.
-
-Assignment is stratified by player rating so that the three sets have matching
-Elo distributions. Expected retention is sum(p_i^2) over the player fractions,
-which is 71% at 82.7/17.3.
+Each player gets one split; a game is kept only if both players share it.
+Players are shuffled within rating strata. Expected retention is sum(p_i^2),
+71% at 0.827/0.173.
 
 Usage:
     python -m src.splitting.split_players
@@ -31,7 +26,6 @@ SPLIT_NAMES = {2: ("train", "test"), 3: ("train", "val", "test")}
 
 
 def load_games(path: Path) -> pl.DataFrame:
-    """Read the parquet and normalise usernames."""
     df = pl.read_parquet(path)
     df = df.with_columns(
         pl.col("white").str.to_lowercase(),
@@ -41,7 +35,6 @@ def load_games(path: Path) -> pl.DataFrame:
 
 
 def build_player_table(df: pl.DataFrame) -> pl.DataFrame:
-    """Collapse the game table to one row per player."""
     long = pl.concat(
         [
             df.select(
@@ -65,14 +58,7 @@ def build_player_table(df: pl.DataFrame) -> pl.DataFrame:
 
 
 def assign_strata(players: pl.DataFrame, n_strata: int) -> pl.DataFrame:
-    """Cut players into equal-count rating strata.
-
-    Quantile strata are used rather than the dataset's elo_bin column. elo_bin
-    is a per-game label derived from avg_elo, so it does not define a bin for an
-    individual player, and recovering its boundaries requires an assumption
-    about how it was constructed. Stratification only needs groups of similar
-    rating with enough members to split cleanly, which quantiles guarantee.
-    """
+    # quantiles of player mean elo; elo_bin is per game, not per player
     elo = players["mean_elo"].to_numpy()
     edges = np.quantile(elo, np.linspace(0, 1, n_strata + 1)[1:-1])
     stratum = np.digitize(elo, edges)
@@ -82,12 +68,6 @@ def assign_strata(players: pl.DataFrame, n_strata: int) -> pl.DataFrame:
 def assign_splits(
     players: pl.DataFrame, fractions: dict[str, float], seed: int
 ) -> pl.DataFrame:
-    """Label every player with a split, independently within each stratum.
-
-    Within a stratum the members are shuffled and cut at the cumulative
-    fractions. Doing this per stratum rather than globally is what keeps the
-    rating distributions aligned across the three sets.
-    """
     rng = np.random.default_rng(seed)
     strata = players["stratum"].to_numpy()
     labels = np.empty(players.height, dtype=object)
@@ -105,7 +85,6 @@ def assign_splits(
 
 
 def apply_split(df: pl.DataFrame, players: pl.DataFrame) -> pl.DataFrame:
-    """Tag each game with a split, or null when its players disagree."""
     lut = players.select("player", "split")
     return (
         df.join(lut, left_on="white", right_on="player")
@@ -123,7 +102,6 @@ def apply_split(df: pl.DataFrame, players: pl.DataFrame) -> pl.DataFrame:
 
 
 def verify(tagged: pl.DataFrame, fractions: dict[str, float]) -> list[str]:
-    """Check disjointness and distribution match, returning report lines."""
     lines: list[str] = []
     kept = tagged.filter(pl.col("split").is_not_null())
 
@@ -183,12 +161,6 @@ def verify(tagged: pl.DataFrame, fractions: dict[str, float]) -> list[str]:
             continue
         stat, p = ks_2samp(samples["train"], samples[name])
         lines.append(f"| train vs {name} | {stat:.4f} | {p:.3f} |")
-    lines.append(
-        "\nA small KS statistic means the rating distributions agree. "
-        "A low p value on large samples flags tiny differences that are "
-        "statistically detectable but practically irrelevant, so read the "
-        "statistic and the deciles rather than the p value alone."
-    )
 
     return lines
 

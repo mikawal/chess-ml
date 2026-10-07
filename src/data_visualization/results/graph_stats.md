@@ -15,10 +15,3 @@
 | components with < 10 players | 1,178 |
 | games between players in the same elo bin | 67.8% |
 | games within one bin of each other | 99.5% |
-
-## Splitting
-
-A leakage-free split assigns whole components, never individual players.
-The giant component alone accounts for 99.5% of games, so
-any split target below that cannot be met by component assignment. Above that
-threshold, games crossing a split boundary must be dropped.

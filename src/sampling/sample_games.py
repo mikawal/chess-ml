@@ -1,29 +1,11 @@
 #!/usr/bin/env python3
 """
-Lichess PGN sampling pipeline - stratified reservoir version.
+Stratified sample of Lichess rapid games from .pgn.zst dumps.
 
-Streams .pgn.zst dumps, applies filters, and performs per-bin reservoir
-sampling to produce a roughly balanced pool of games for downstream
-analysis (PGN-feature extraction + selective Stockfish evaluation).
-
-Filters (unchanged from previous version):
-  - Rated only
-  - Rapid only (Lichess formula: 480 <= base + 40*inc <= 1499)
-  - No BOT players
-  - No Abandoned / Rules infraction
-  - Rating difference <= ±max_elo_diff (default 100)
-  - Minimum half-moves (default 20)
-  - Both Elo headers present and parseable
-  - NO eval filter (all games kept regardless of Lichess eval annotations)
-
-Sampling:
-  - 9 Elo bins keyed off avg_elo:
-      <800, [800,1000), [1000,1200), [1200,1400), [1400,1600),
-      [1600,1800), [1800,2000), [2000,2200), >=2200
-  - Vitter's Algorithm R reservoir sampler per bin, capped at
-    --per_bin_target (default 50000). Bins with fewer eligible
-    games than the cap simply retain everything seen.
-  - All input files are scanned in full (no early break).
+Filters: rated, rapid (480 <= base + 40*inc <= 1499), no bots, no abandoned /
+rules infraction, |elo diff| <= 100, >= 20 half-moves, both elos present.
+One reservoir sampler (Algorithm R) per 200-elo bin of avg_elo, capped at
+--per_bin_target. Bins with fewer games keep everything.
 """
 
 import argparse
@@ -44,9 +26,6 @@ from tqdm import tqdm
 RAPID_PATTERN = re.compile(r"^(\d+)\+(\d+)$")
 CLK_PATTERN = re.compile(r"\[%clk\s+(\d+:\d+:\d+)\]")
 
-# Bin edges and labels. BIN_EDGES has length N; BIN_NAMES has length N+1.
-# bisect_right(BIN_EDGES, x) returns an index in [0, N] that maps directly
-# into BIN_NAMES, giving "<800" for x<800 and ">=2200" for x>=2200.
 BIN_EDGES = [800, 1000, 1200, 1400, 1600, 1800, 2000, 2200]
 BIN_NAMES = (
     ["<800"]
@@ -56,24 +35,16 @@ BIN_NAMES = (
 
 
 def get_elo_bin(avg_elo: float) -> str:
-    """Map avg_elo to a bin label using bisect_right semantics."""
     idx = bisect.bisect_right(BIN_EDGES, avg_elo)
     return BIN_NAMES[idx]
 
 
 class ReservoirSampler:
-    """
-    Vitter's Algorithm R: yields a uniform random sample of size k
-    from a stream of unknown length, in a single pass, using O(k) memory.
-
-    For each incoming item (1-indexed count i):
-      - If i <= k: append to buffer.
-      - If i  > k: draw j in [0, i-1]; if j < k, replace buffer[j] with item.
-    """
+    """Vitter's Algorithm R: uniform sample of k items from a stream."""
     def __init__(self, k: int, rng: random.Random):
         self.k = k
         self.buffer = []
-        self.count = 0  # number of items seen (not buffered)
+        self.count = 0
         self.rng = rng
 
     def add(self, item) -> None:
@@ -90,7 +61,6 @@ class ReservoirSampler:
 
 
 def is_rapid(time_control: str) -> bool:
-    """Check if time control qualifies as Rapid per Lichess definition."""
     if not time_control:
         return False
     match = RAPID_PATTERN.match(time_control)
@@ -103,19 +73,13 @@ def is_rapid(time_control: str) -> bool:
 
 
 def extract_game_id(site_header: str) -> str:
-    """Extract Lichess game ID from Site header."""
     if site_header and "/" in site_header:
         return site_header.rstrip("/").split("/")[-1]
     return ""
 
 
 def extract_moves_and_clocks(game: chess.pgn.Game):
-    """
-    Extract SAN move list and clock values from the main line.
-    Returns (moves_san: list[str], clocks_sec: list[int|None]).
-    clocks_sec contains remaining time in seconds after each half-move,
-    or None if no clock annotation was present.
-    """
+    """SAN moves and remaining clock (seconds, or None) after each half-move."""
     moves = []
     clocks = []
     node = game
@@ -133,7 +97,6 @@ def extract_moves_and_clocks(game: chess.pgn.Game):
 
 
 def stream_games_from_zst(pgn_zst_path: Path):
-    """Yield chess.pgn.Game objects from a .pgn.zst file without full decompression."""
     with open(pgn_zst_path, "rb") as fh:
         dctx = zstd.ZstdDecompressor()
         stream_reader = dctx.stream_reader(fh)
@@ -170,11 +133,9 @@ def main():
     samplers = {name: ReservoirSampler(args.per_bin_target, rng) for name in BIN_NAMES}
 
     filter_stats = Counter()
-    
-    # pre sampling
-    bin_seen = Counter()  
+    bin_seen = Counter()
 
-    print(f"Configuration:")
+    print("Configuration:")
     print(f"  Inputs: {len(args.input)} file(s)")
     print(f"  Per-bin target: {args.per_bin_target}")
     print(f"  Max |Elo diff|: {args.max_elo_diff}")
@@ -190,29 +151,24 @@ def main():
             filter_stats["total_read"] += 1
             pbar.update(1)
 
-            # 1. Rated?
             if "Rated" not in game.headers.get("Event", ""):
                 filter_stats["reject_not_rated"] += 1
                 continue
 
-            # 2. Rapid?
             if not is_rapid(game.headers.get("TimeControl", "")):
                 filter_stats["reject_not_rapid"] += 1
                 continue
 
-            # 3. No bots
             if (game.headers.get("WhiteTitle") == "BOT"
                     or game.headers.get("BlackTitle") == "BOT"):
                 filter_stats["reject_bot"] += 1
                 continue
 
-            # 4. No abandoned / rules infraction
             termination = game.headers.get("Termination", "")
             if termination in ("Abandoned", "Rules infraction"):
                 filter_stats["reject_termination"] += 1
                 continue
 
-            # 5. Elo headers parseable and within diff threshold
             try:
                 white_elo = int(game.headers.get("WhiteElo", 0))
                 black_elo = int(game.headers.get("BlackElo", 0))
@@ -226,13 +182,11 @@ def main():
                 filter_stats["reject_elo_diff"] += 1
                 continue
 
-            # 6. Extract moves + clocks, check minimum length
             moves, clocks = extract_moves_and_clocks(game)
             if len(moves) < args.min_half_moves:
                 filter_stats["reject_too_short"] += 1
                 continue
 
-            # All filters passed: bin and feed to reservoir
             avg_elo = (white_elo + black_elo) / 2
             bin_name = get_elo_bin(avg_elo)
             bin_seen[bin_name] += 1
@@ -255,7 +209,6 @@ def main():
             }
             samplers[bin_name].add(game_dict)
 
-            # Periodic progress update on the tqdm bar
             if filter_stats["total_read"] % 50000 == 0:
                 total_kept = sum(len(s) for s in samplers.values())
                 min_bin = min(BIN_NAMES, key=lambda n: len(samplers[n]))
@@ -271,7 +224,6 @@ def main():
             seen = bin_seen[name]
             print(f"    {name:>14}: kept={kept:>6}  seen={seen:>8}")
 
-    # Concatenate kept games across bins
     kept_games = []
     for name in BIN_NAMES:
         kept_games.extend(samplers[name].buffer)
@@ -284,13 +236,12 @@ def main():
     parquet_path = output_dir / "sampled_games.parquet"
     df.to_parquet(parquet_path, index=False)
 
-    # Summary
     print(f"\n{'='*60}")
-    print(f"SAMPLING COMPLETE")
+    print("SAMPLING COMPLETE")
     print(f"{'='*60}")
     print(f"Games kept (across all bins): {len(df)}")
 
-    print(f"\nFilter statistics:")
+    print("\nFilter statistics:")
     keys_in_order = [
         "total_read", "reject_not_rated", "reject_not_rapid", "reject_bot",
         "reject_termination", "reject_missing_elo", "reject_elo_diff",
@@ -300,14 +251,14 @@ def main():
         if filter_stats[k]:
             print(f"  {k}: {filter_stats[k]}")
 
-    print(f"\nPer-bin counts (kept / total eligible seen):")
+    print("\nPer-bin counts (kept / total eligible seen):")
     for name in BIN_NAMES:
         kept = len(samplers[name])
         seen = bin_seen[name]
         ratio = (kept / seen * 100) if seen else 0.0
         print(f"  {name:>14}: {kept:>6} / {seen:>8}  ({ratio:5.2f}% retained)")
 
-    print(f"\nRating distribution (avg_elo):")
+    print("\nRating distribution (avg_elo):")
     print(f"  Min:    {df['avg_elo'].min():.0f}")
     print(f"  Q1:     {df['avg_elo'].quantile(0.25):.0f}")
     print(f"  Median: {df['avg_elo'].median():.0f}")
@@ -315,7 +266,7 @@ def main():
     print(f"  Max:    {df['avg_elo'].max():.0f}")
 
     termination_counter = df["termination"].value_counts()
-    print(f"\nTermination reasons:")
+    print("\nTermination reasons:")
     for reason, cnt in termination_counter.items():
         print(f"  {reason}: {cnt} ({100*cnt/len(df):.1f}%)")
 
