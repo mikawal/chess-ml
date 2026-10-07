@@ -29,3 +29,8 @@ tools/
 *.fls
 *.fdb_latexmk
 *.synctex.gz
+
+# Local / sensitive
+*.gexf
+.claude/
+.env
