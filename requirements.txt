@@ -1,0 +1,14 @@
+chess
+numpy
+pandas
+polars
+pyarrow
+scipy
+zstandard
+tqdm
+python-igraph
+matplotlib
+seaborn
+scikit-learn
+xgboost
+jupyter

@@ -17,3 +17,15 @@ venv/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Claude / tools
+.claude/worktrees/
+tools/
+
+# LaTeX
+*.aux
+*.log
+*.out
+*.fls
+*.fdb_latexmk
+*.synctex.gz
