@@ -78,8 +78,9 @@ print(f"players: {n_players:,}  pairings: {n_pairs:,}  components: {n_comp:,}")
 # bin x bin pairing matrix
 bw, bb = player_bin[s], player_bin[d]
 M = np.zeros((n_bins, n_bins), dtype=np.int64)
-np.add.at(M, (bw, bb), 1)
-M = M + M.T - np.diag(np.diag(M))  # games are undirected
+np.add.at(M, (np.maximum(bw, bb), np.minimum(bw, bb)), 1)  # undirected: count each game once
+assert M.sum() == n_games
+M = M + M.T - np.diag(np.diag(M))  # mirror for display
 
 fig, ax = plt.subplots(figsize=(6.4, 5.4))
 im = ax.imshow(np.where(M > 0, M, np.nan), cmap="RdYlBu_r",
@@ -93,7 +94,7 @@ ax.set_title(f"games played between elo bins  (n = {n_games:,})", pad=12)
 for i in range(n_bins):
     for j in range(n_bins):
         if M[i, j] > 0:
-            ax.text(j, i, f"{100*M[i,j]/M.sum():.1f}", ha="center", va="center",
+            ax.text(j, i, f"{100*M[i,j]/n_games:.1f}", ha="center", va="center",
                     fontsize=6.5, color="black")
 fig.colorbar(im, ax=ax, shrink=0.75, label="games (log scale)")
 ax.set_aspect("equal")
